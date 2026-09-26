@@ -138,3 +138,55 @@ class DiffOut(BaseModel):
     new_event_cutoff_id: str | None
     student_changes: list[dict[str, Any]]
     students_affected: int
+
+
+class SignIn(BaseModel):
+    role: Literal["officer", "director", "dean"]
+    signer_id: str = Field(..., min_length=1, max_length=128)
+
+
+class InvalidateIn(BaseModel):
+    reason: str = Field("", max_length=512)
+
+
+class PublishIn(BaseModel):
+    freeze_id: str = Field(..., min_length=1, max_length=128)
+
+
+class SignatureOut(BaseModel):
+    role: str
+    signer_id: str
+    signed_at: datetime
+
+
+class ComparisonOut(BaseModel):
+    plan_version: str
+    comparison_id: str
+    base_freeze_id: str | None
+    base_fingerprint: str
+    candidate_fingerprint: str
+    candidate_cutoff_id: str | None
+    status: str
+    route: list[str]
+    signatures: list[SignatureOut]
+    pending_roles: list[str]
+    next_role: str | None
+    summary: dict[str, Any]
+    diff: dict[str, Any]
+    stale: bool
+    published_freeze_id: str | None
+    invalidated_reason: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class RouteOut(BaseModel):
+    plan_version: str
+    comparison_id: str
+    status: str
+    required_roles: list[str]
+    signed_roles: list[str]
+    pending_roles: list[str]
+    next_role: str | None
+    complete: bool
+    signatures: list[SignatureOut]

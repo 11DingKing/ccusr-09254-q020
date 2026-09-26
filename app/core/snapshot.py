@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from typing import Any
 
 from .replay import (
@@ -116,6 +118,26 @@ def build_snapshot(
 
 def _index_students(snapshot: Snapshot) -> dict[str, dict[str, Any]]:
     return {s["student_id"]: s for s in snapshot.students}
+
+
+def snapshot_fingerprint(snapshot: Snapshot) -> str:
+    """计算快照内容指纹。
+
+    只覆盖决定合规结果的内容字段，排除 generated_at、freeze_id 等
+    易变元数据，因此同一批事件重放出的候选快照指纹保持稳定；任何
+    事件、学时或学生变化都会改变指纹。
+    """
+    content = {
+        "plan_version": snapshot.plan_version,
+        "timezone": snapshot.timezone,
+        "required_seconds": snapshot.required_seconds,
+        "event_cutoff_id": snapshot.event_cutoff_id,
+        "students": snapshot.students,
+    }
+    raw = json.dumps(
+        content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return sha256(raw.encode("utf-8")).hexdigest()
 
 
 def diff_snapshots(old: Snapshot, new: Snapshot) -> dict[str, Any]:

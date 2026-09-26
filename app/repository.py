@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from .core.replay import Event as CoreEvent
 from .core.replay import EventType
+from .models import Comparison, ComparisonSignature
 from .models import Event as EventModel
 from .models import Freeze, Plan
 
@@ -143,3 +144,113 @@ def insert_freeze(
     if inserted is not None:
         return db.get(Freeze, (plan_version, freeze_id))
     return None
+
+
+def latest_freeze(db: Session, plan_version: str) -> Freeze | None:
+    """返回该培养方案最近一次创建的冻结。"""
+    stmt = (
+        select(Freeze)
+        .where(Freeze.plan_version == plan_version)
+        .order_by(Freeze.created_at.desc(), Freeze.freeze_id.desc())
+        .limit(1)
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def get_comparison(
+    db: Session, plan_version: str, comparison_id: str
+) -> Comparison | None:
+    return db.get(Comparison, (plan_version, comparison_id))
+
+
+def insert_comparison(
+    db: Session,
+    *,
+    plan_version: str,
+    comparison_id: str,
+    base_freeze_id: str | None,
+    base_fingerprint: str,
+    candidate_fingerprint: str,
+    candidate_cutoff_id: str | None,
+    diff: dict[str, Any],
+    summary: dict[str, Any],
+    route: list[str],
+    status: str,
+) -> Comparison | None:
+    """执行确定性的业务处理。"""
+    stmt = sqlite_insert(Comparison).values(
+        plan_version=plan_version,
+        comparison_id=comparison_id,
+        base_freeze_id=base_freeze_id,
+        base_fingerprint=base_fingerprint,
+        candidate_fingerprint=candidate_fingerprint,
+        candidate_cutoff_id=candidate_cutoff_id,
+        diff=diff,
+        summary=summary,
+        route=route,
+        status=status,
+    )
+    stmt = stmt.on_conflict_do_nothing(
+        index_elements=["plan_version", "comparison_id"]
+    ).returning(Comparison.plan_version)
+    inserted = db.execute(stmt).scalar_one_or_none()
+    db.commit()
+    if inserted is not None:
+        return db.get(Comparison, (plan_version, comparison_id))
+    return None
+
+
+def save_comparison(db: Session, row: Comparison) -> Comparison:
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def list_open_comparisons(
+    db: Session, plan_version: str, exclude_id: str
+) -> list[Comparison]:
+    stmt = (
+        select(Comparison)
+        .where(Comparison.plan_version == plan_version)
+        .where(Comparison.status.in_(["pending", "approved"]))
+        .where(Comparison.comparison_id != exclude_id)
+    )
+    return list(db.execute(stmt).scalars().all())
+
+
+def insert_signature(
+    db: Session,
+    *,
+    plan_version: str,
+    comparison_id: str,
+    role: str,
+    signer_id: str,
+) -> ComparisonSignature | None:
+    """执行确定性的业务处理。"""
+    stmt = sqlite_insert(ComparisonSignature).values(
+        plan_version=plan_version,
+        comparison_id=comparison_id,
+        role=role,
+        signer_id=signer_id,
+    )
+    stmt = stmt.on_conflict_do_nothing(
+        index_elements=["plan_version", "comparison_id", "role"]
+    ).returning(ComparisonSignature.plan_version)
+    inserted = db.execute(stmt).scalar_one_or_none()
+    db.commit()
+    if inserted is not None:
+        return db.get(ComparisonSignature, (plan_version, comparison_id, role))
+    return None
+
+
+def list_signatures(
+    db: Session, plan_version: str, comparison_id: str
+) -> list[ComparisonSignature]:
+    stmt = (
+        select(ComparisonSignature)
+        .where(ComparisonSignature.plan_version == plan_version)
+        .where(ComparisonSignature.comparison_id == comparison_id)
+        .order_by(ComparisonSignature.signed_at, ComparisonSignature.role)
+    )
+    return list(db.execute(stmt).scalars().all())

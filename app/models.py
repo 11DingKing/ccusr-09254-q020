@@ -69,3 +69,57 @@ class Freeze(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )
+
+
+class Comparison(Base):
+    """候选快照与上一次冻结的比较及审批状态。
+
+    比较结果固定到 base/candidate 两个快照指纹；任一快照内容变化
+    都会使该审批失效。comparison_id 由两个指纹派生，天然幂等。
+    """
+
+    __tablename__ = "comparisons"
+
+    plan_version: Mapped[str] = mapped_column(String(128), primary_key=True)
+    comparison_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    base_freeze_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    base_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    candidate_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    candidate_cutoff_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    diff: Mapped[dict] = mapped_column(JSON, nullable=False)
+    summary: Mapped[dict] = mapped_column(JSON, nullable=False)
+    route: Mapped[list] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    published_freeze_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    invalidated_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "plan_version",
+            "base_fingerprint",
+            "candidate_fingerprint",
+            name="uq_comparisons_fingerprints",
+        ),
+        CheckConstraint(
+            "status in ('pending','approved','published','invalid')",
+            name="ck_comparisons_status",
+        ),
+    )
+
+
+class ComparisonSignature(Base):
+    __tablename__ = "comparison_signatures"
+
+    plan_version: Mapped[str] = mapped_column(String(128), primary_key=True)
+    comparison_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    role: Mapped[str] = mapped_column(String(32), primary_key=True)
+    signer_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    signed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )

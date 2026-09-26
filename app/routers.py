@@ -7,15 +7,20 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from . import services
+from . import approvals, services
 from .db import get_db
 from .schemas import (
+    ComparisonOut,
     DiffOut,
     EventBatchIn,
     FreezeIn,
     ImportResult,
+    InvalidateIn,
     PlanIn,
     PlanOut,
+    PublishIn,
+    RouteOut,
+    SignIn,
     SnapshotOut,
     StudentProgressOut,
 )
@@ -160,3 +165,153 @@ def get_diff(
         )
     except (services.PlanNotFoundError, services.FreezeNotFoundError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _comparison_errors(exc: Exception) -> HTTPException:
+    if isinstance(exc, approvals.ComparisonNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    return HTTPException(status_code=409, detail=str(exc))
+
+
+@router.post(
+    "/plans/{plan_version}/comparisons",
+    response_model=ComparisonOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["approvals"],
+)
+def post_comparison(plan_version: str, db: Session = Depends(get_db)) -> Any:
+    """比较：把当前候选快照与上一次冻结比较并生成审批路由。"""
+    try:
+        view, _ = approvals.compare_candidate(db, plan_version=plan_version)
+        return view
+    except services.PlanNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get(
+    "/plans/{plan_version}/comparisons/{comparison_id}",
+    response_model=ComparisonOut,
+    tags=["approvals"],
+)
+def get_comparison(
+    plan_version: str, comparison_id: str, db: Session = Depends(get_db)
+) -> Any:
+    try:
+        return approvals.get_comparison_view(
+            db, plan_version=plan_version, comparison_id=comparison_id
+        )
+    except services.PlanNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except approvals.ComparisonNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get(
+    "/plans/{plan_version}/comparisons/{comparison_id}/route",
+    response_model=RouteOut,
+    tags=["approvals"],
+)
+def get_comparison_route(
+    plan_version: str, comparison_id: str, db: Session = Depends(get_db)
+) -> Any:
+    """路由：查看所需签署人、已签与待签角色。"""
+    try:
+        return approvals.get_route(
+            db, plan_version=plan_version, comparison_id=comparison_id
+        )
+    except services.PlanNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except approvals.ComparisonNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post(
+    "/plans/{plan_version}/comparisons/{comparison_id}/signatures",
+    response_model=ComparisonOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["approvals"],
+)
+def post_signature(
+    plan_version: str,
+    comparison_id: str,
+    body: SignIn,
+    db: Session = Depends(get_db),
+) -> Any:
+    """签署：按路由顺序签署；签署前重算指纹，快照变化即失效。"""
+    try:
+        return approvals.sign(
+            db,
+            plan_version=plan_version,
+            comparison_id=comparison_id,
+            role=body.role,
+            signer_id=body.signer_id,
+        )
+    except services.PlanNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (
+        approvals.ComparisonNotFoundError,
+        approvals.ComparisonStaleError,
+        approvals.ComparisonStateError,
+        approvals.SignStepError,
+    ) as exc:
+        raise _comparison_errors(exc) from exc
+
+
+@router.post(
+    "/plans/{plan_version}/comparisons/{comparison_id}/invalidate",
+    response_model=ComparisonOut,
+    tags=["approvals"],
+)
+def post_invalidate(
+    plan_version: str,
+    comparison_id: str,
+    body: InvalidateIn,
+    db: Session = Depends(get_db),
+) -> Any:
+    """失效：显式作废一条待签或已签齐的比较。"""
+    try:
+        return approvals.invalidate(
+            db,
+            plan_version=plan_version,
+            comparison_id=comparison_id,
+            reason=body.reason,
+        )
+    except services.PlanNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (
+        approvals.ComparisonNotFoundError,
+        approvals.ComparisonStateError,
+    ) as exc:
+        raise _comparison_errors(exc) from exc
+
+
+@router.post(
+    "/plans/{plan_version}/comparisons/{comparison_id}/publish",
+    response_model=SnapshotOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["approvals"],
+)
+def post_publish(
+    plan_version: str,
+    comparison_id: str,
+    body: PublishIn,
+    db: Session = Depends(get_db),
+) -> Any:
+    """发布：签署齐全且指纹未变时，把候选快照冻结为正式版本。"""
+    try:
+        snapshot, _ = approvals.publish(
+            db,
+            plan_version=plan_version,
+            comparison_id=comparison_id,
+            freeze_id=body.freeze_id,
+        )
+        return snapshot.to_dict()
+    except services.PlanNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (
+        approvals.ComparisonNotFoundError,
+        approvals.ComparisonStaleError,
+        approvals.ComparisonStateError,
+        approvals.PublishConflictError,
+    ) as exc:
+        raise _comparison_errors(exc) from exc
