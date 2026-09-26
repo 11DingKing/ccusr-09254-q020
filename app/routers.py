@@ -10,12 +10,20 @@ from sqlalchemy.orm import Session
 from . import services
 from .db import get_db
 from .schemas import (
+    ApprovalOut,
+    ComparisonIn,
+    ComparisonOut,
     DiffOut,
     EventBatchIn,
     FreezeIn,
     ImportResult,
+    InvalidateIn,
     PlanIn,
     PlanOut,
+    PublishIn,
+    PublishOut,
+    RouteOut,
+    SignatureIn,
     SnapshotOut,
     StudentProgressOut,
 )
@@ -160,3 +168,156 @@ def get_diff(
         )
     except (services.PlanNotFoundError, services.FreezeNotFoundError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# 冻结前比较与审批：比较、路由、签署、失效、发布
+# ---------------------------------------------------------------------------
+
+
+def _approval_errors(exc: Exception) -> HTTPException:
+    if isinstance(exc, services.PlanNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, services.ApprovalNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, services.RoleInsufficientError):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, services.PolicyValidationError):
+        return HTTPException(status_code=422, detail=str(exc))
+    if isinstance(
+        exc, (services.ApprovalConflictError, services.FreezeConflictError)
+    ):
+        return HTTPException(status_code=409, detail=str(exc))
+    return HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post(
+    "/plans/{plan_version}/freeze-approvals/comparisons",
+    response_model=ComparisonOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def post_comparison(
+    plan_version: str, body: ComparisonIn, db: Session = Depends(get_db)
+) -> Any:
+    """比较候选快照与上一次冻结，按变化策略生成审批路由。"""
+    try:
+        view, created = services.create_comparison(
+            db,
+            plan_version=plan_version,
+            policy_data=body.policy.model_dump() if body.policy else None,
+        )
+        return {"created": created, "approval": view}
+    except Exception as exc:
+        raise _approval_errors(exc) from exc
+
+
+@router.get(
+    "/plans/{plan_version}/freeze-approvals",
+    response_model=list[ApprovalOut],
+)
+def list_freeze_approvals(
+    plan_version: str, db: Session = Depends(get_db)
+) -> Any:
+    try:
+        return services.list_approval_views(db, plan_version)
+    except Exception as exc:
+        raise _approval_errors(exc) from exc
+
+
+@router.get(
+    "/plans/{plan_version}/freeze-approvals/{approval_id}",
+    response_model=ApprovalOut,
+)
+def get_freeze_approval(
+    plan_version: str, approval_id: str, db: Session = Depends(get_db)
+) -> Any:
+    try:
+        return services.get_approval_view(db, plan_version, approval_id)
+    except Exception as exc:
+        raise _approval_errors(exc) from exc
+
+
+@router.get(
+    "/plans/{plan_version}/freeze-approvals/{approval_id}/route",
+    response_model=RouteOut,
+)
+def get_freeze_approval_route(
+    plan_version: str, approval_id: str, db: Session = Depends(get_db)
+) -> Any:
+    """查看所需签署人、已满足与未满足的签署要求。"""
+    try:
+        return services.get_route(db, plan_version, approval_id)
+    except Exception as exc:
+        raise _approval_errors(exc) from exc
+
+
+@router.post(
+    "/plans/{plan_version}/freeze-approvals/{approval_id}/signatures",
+    response_model=ApprovalOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def post_freeze_approval_signature(
+    plan_version: str,
+    approval_id: str,
+    body: SignatureIn,
+    db: Session = Depends(get_db),
+) -> Any:
+    """签署审批；更高级别角色可覆盖较低级别的签署要求。"""
+    try:
+        return services.sign_approval(
+            db,
+            plan_version=plan_version,
+            approval_id=approval_id,
+            actor_id=body.actor_id,
+            actor_role=body.actor_role,
+            note=body.note,
+        )
+    except Exception as exc:
+        raise _approval_errors(exc) from exc
+
+
+@router.post(
+    "/plans/{plan_version}/freeze-approvals/{approval_id}/invalidate",
+    response_model=ApprovalOut,
+)
+def post_freeze_approval_invalidate(
+    plan_version: str,
+    approval_id: str,
+    body: InvalidateIn,
+    db: Session = Depends(get_db),
+) -> Any:
+    """手动使审批失效；基线或候选快照变化也会自动失效。"""
+    try:
+        return services.invalidate_approval(
+            db,
+            plan_version=plan_version,
+            approval_id=approval_id,
+            actor_id=body.actor_id,
+            reason=body.reason,
+        )
+    except Exception as exc:
+        raise _approval_errors(exc) from exc
+
+
+@router.post(
+    "/plans/{plan_version}/freeze-approvals/{approval_id}/publish",
+    response_model=PublishOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def post_freeze_approval_publish(
+    plan_version: str,
+    approval_id: str,
+    body: PublishIn,
+    db: Session = Depends(get_db),
+) -> Any:
+    """发布：签署完成且指纹未漂移时固化为新的冻结快照。"""
+    try:
+        view, freeze = services.publish_approval(
+            db,
+            plan_version=plan_version,
+            approval_id=approval_id,
+            freeze_id=body.freeze_id,
+        )
+        return {"approval": view, "freeze": freeze}
+    except Exception as exc:
+        raise _approval_errors(exc) from exc

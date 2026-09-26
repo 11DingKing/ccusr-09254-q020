@@ -138,3 +138,87 @@ class DiffOut(BaseModel):
     new_event_cutoff_id: str | None
     student_changes: list[dict[str, Any]]
     students_affected: int
+
+
+class PolicyIn(BaseModel):
+    """变化策略覆盖项；缺省字段使用系统默认。"""
+
+    model_config = {"extra": "forbid"}
+
+    base_role: str | None = None
+    student_moderate_threshold: int | None = Field(None, ge=0)
+    student_major_threshold: int | None = Field(None, ge=0)
+    seconds_moderate_threshold: int | None = Field(None, ge=0)
+    seconds_major_threshold: int | None = Field(None, ge=0)
+    anomaly_type_roles: dict[str, str] | None = None
+    sensitive_field_roles: dict[str, str] | None = None
+
+
+class ComparisonIn(BaseModel):
+    policy: PolicyIn | None = None
+
+
+class SignatureOut(BaseModel):
+    actor_id: str
+    actor_role: str
+    note: str
+    created_at: datetime
+
+
+class ApprovalOut(BaseModel):
+    approval_id: str
+    plan_version: str
+    state: str
+    baseline_freeze_id: str | None
+    baseline_fingerprint: str
+    candidate_fingerprint: str
+    candidate_event_cutoff_id: str | None
+    metrics: dict[str, Any]
+    policy: dict[str, Any]
+    required_roles: list[str]
+    route_reasons: list[dict[str, Any]]
+    satisfied_roles: list[str]
+    outstanding_roles: list[str]
+    signatures: list[SignatureOut]
+    invalidation_reason: str | None
+    published_freeze_id: str | None
+    diff: dict[str, Any]
+    revision: int
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ComparisonOut(BaseModel):
+    created: bool
+    approval: ApprovalOut
+
+
+class RouteOut(BaseModel):
+    approval_id: str
+    state: str
+    required_roles: list[str]
+    satisfied_roles: list[str]
+    outstanding_roles: list[str]
+    route_reasons: list[dict[str, Any]]
+    signatures: list[SignatureOut]
+
+
+class SignatureIn(BaseModel):
+    actor_id: str = Field(..., min_length=1, max_length=128)
+    actor_role: str = Field(..., min_length=1, max_length=32)
+    note: str = Field("", max_length=512)
+
+
+class InvalidateIn(BaseModel):
+    actor_id: str = Field(..., min_length=1, max_length=128)
+    reason: str = Field(..., min_length=1, max_length=512)
+
+
+class PublishIn(BaseModel):
+    freeze_id: str | None = Field(None, min_length=1, max_length=128)
+
+
+class PublishOut(BaseModel):
+    approval: ApprovalOut
+    freeze: SnapshotOut
